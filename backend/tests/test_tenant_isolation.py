@@ -1,3 +1,4 @@
+from django.db import connection
 from django.test import TransactionTestCase
 from django_tenants.utils import schema_context
 from rest_framework.exceptions import ValidationError
@@ -6,13 +7,18 @@ from apps.crm.models import Client
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
+from .helpers import make_user
+
 
 class TenantIsolationTests(TransactionTestCase):
     def setUp(self):
-        self.a = create_tenant("Acme", "acme")
-        self.b = create_tenant("Beta Co", "betaco")
+        connection.set_schema_to_public()
+        self.owner = make_user("owner@example.test")
+        self.a = create_tenant("Acme", "acme", owner=self.owner)
+        self.b = create_tenant("Beta Co", "betaco", owner=self.owner)
 
     def tearDown(self):
+        connection.set_schema_to_public()
         for t in Tenant.objects.exclude(schema_name="public"):
             t.delete(force_drop=True)
 
@@ -26,6 +32,6 @@ class TenantIsolationTests(TransactionTestCase):
 
     def test_subdomain_rules(self):
         with self.assertRaises(ValidationError):
-            create_tenant("Dup", "acme")  # already taken
+            create_tenant("Dup", "acme", owner=self.owner)  # already taken
         with self.assertRaises(ValidationError):
-            create_tenant("Admin", "admin")  # reserved
+            create_tenant("Admin", "admin", owner=self.owner)  # reserved

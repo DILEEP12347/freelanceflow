@@ -8,7 +8,7 @@ class UserManager(BaseUserManager):
     def _create(self, email, password, **extra):
         if not email:
             raise ValueError("Email is required")
-        user = self.model(email=self.normalize_email(email), **extra)
+        user = self.model(email=self.normalize_email(email).lower(), **extra)
         user.set_password(password)
         user.save(using=self._db)
         return user
@@ -21,14 +21,17 @@ class UserManager(BaseUserManager):
     def create_superuser(self, email, password=None, **extra):
         extra.setdefault("is_staff", True)
         extra.setdefault("is_superuser", True)
+        extra.setdefault("is_email_verified", True)
         return self._create(email, password, **extra)
 
 
 class User(AbstractUser):
-    """Email-based login. Lives in the public schema; tenant access comes via Membership (Week 2)."""
+    """Email-based login. Lives in the public schema; tenant access comes via Membership."""
 
     username = None
     email = models.EmailField(unique=True)
+    full_name = models.CharField(max_length=150, blank=True, default="")
+    is_email_verified = models.BooleanField(default=False)
 
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = []

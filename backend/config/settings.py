@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -8,6 +9,10 @@ DEBUG = os.environ.get("DEBUG", "1") == "1"
 # ".localhost" matches localhost AND acme.localhost, beta.localhost, ...
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", ".localhost,127.0.0.1").split(",")
 BASE_DOMAIN = os.environ.get("BASE_DOMAIN", "localhost")
+
+# Used to build links inside emails. In production: SITE_SCHEME=https, SITE_PORT=""
+SITE_SCHEME = os.environ.get("SITE_SCHEME", "http")
+SITE_PORT = os.environ.get("SITE_PORT", "8000")
 
 # --- django-tenants: which apps live where -------------------------------
 SHARED_APPS = [
@@ -25,7 +30,8 @@ SHARED_APPS = [
 
 TENANT_APPS = [
     "django.contrib.contenttypes",
-    "apps.crm",  # Week 3 expands this: clients, invoices, ...
+    "apps.crm",
+    "apps.business",  # Week 2: BusinessProfile (one per tenant schema)
 ]
 
 INSTALLED_APPS = list(SHARED_APPS) + [a for a in TENANT_APPS if a not in SHARED_APPS]
@@ -74,10 +80,34 @@ DATABASE_ROUTERS = ("django_tenants.routers.TenantSyncRouter",)
 
 AUTH_USER_MODEL = "accounts.User"
 
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
+
+# --- DRF + JWT -------------------------------------------------------------
 REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
-    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],  # tightened in Week 2
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ],
+    # Secure by default: every view must explicitly opt OUT of auth (AllowAny).
+    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
+    "DEFAULT_THROTTLE_RATES": {"auth": "60/min"},
 }
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "ROTATE_REFRESH_TOKENS": True,
+    "UPDATE_LAST_LOGIN": True,
+}
+
+# --- Email: prints to the `web` container logs in development -------------
+EMAIL_BACKEND = os.environ.get("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
+DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "FreelanceFlow <no-reply@freelanceflow.local>")
 
 CELERY_BROKER_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
