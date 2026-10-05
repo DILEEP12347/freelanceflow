@@ -34,8 +34,9 @@ def get_membership(request):
 class TenantRolePermission(BasePermission):
     """Views declare which roles may read (safe methods) and write (everything else):
 
-        read_roles  = ALL_ROLES        # default
-        write_roles = MANAGER_ROLES    # default
+        read_roles  = ALL_ROLES                       # default
+        write_roles = MANAGER_ROLES                   # default
+        action_roles = {"destroy": MANAGER_ROLES}     # optional per-action override (ViewSets)
     """
 
     message = "You do not have permission to do that in this organization."
@@ -44,7 +45,11 @@ class TenantRolePermission(BasePermission):
         membership = get_membership(request)
         if membership is None:
             return False
-        if request.method in SAFE_METHODS:
+        overrides = getattr(view, "action_roles", None) or {}
+        action = getattr(view, "action", None)
+        if action in overrides:
+            allowed = overrides[action]
+        elif request.method in SAFE_METHODS:
             allowed = getattr(view, "read_roles", ALL_ROLES)
         else:
             allowed = getattr(view, "write_roles", MANAGER_ROLES)

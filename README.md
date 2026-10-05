@@ -1,38 +1,38 @@
-# FreelanceFlow (through Week 2)
+# FreelanceFlow (through Week 3)
 
 Multi-tenant Django backend: schema-per-tenant (django-tenants), subdomain routing, JWT auth,
-role-based access, team invites, Postgres, Redis, Celery.
+role-based access, team invites, a CRM (clients, contacts, notes, tags, lead pipeline, timeline),
+Postgres, Redis, Celery.
 
 ## Run
 ```bash
 cp .env.example .env
 docker compose up -d --build
-docker compose exec web python manage.py makemigrations accounts tenants business
+docker compose exec web python manage.py makemigrations accounts tenants business crm
 docker compose exec web python manage.py migrate_schemas
 docker compose exec web python manage.py bootstrap_public
+docker compose exec web python manage.py seed_demo --subdomain acme   # optional sample data
 ```
 Tests: `docker compose exec web python manage.py test tests`
 
-## Auth model
-- **Identity**: email + password -> JWT (access 15 min, refresh 7 days). Users live in the public schema.
-- **Access**: a user's `Membership` (role) in the tenant being requested. A token for tenant A is a 403 on tenant B.
-- **Roles**: owner > admin > accountant > viewer.
+## Roles
+owner > admin > accountant > viewer. Everyone reads. Writing CRM data needs owner/admin/accountant.
+Deleting clients/leads/tags/contacts needs owner/admin. Team, invites and business profile: owner/admin.
 
-| Resource | viewer | accountant | admin | owner |
-|---|---|---|---|---|
-| Clients (read / write) | R | R W | R W | R W |
-| Business profile | R | R | R W | R W |
-| Members (list / change / remove) | list | list | all but admins/owner | all but owner |
-| Invites | - | - | create (not admin role) | create |
+## CRM endpoints (tenant domains, JWT required)
+| Endpoint | Notes |
+|---|---|
+| `GET/POST /api/clients/` | `?q=` search, `?status=active\|archived\|all` (default active), `?tag=`, `?ordering=`, `?page=&page_size=` |
+| `GET/PATCH/DELETE /api/clients/<id>/` | status changes only via the two actions below |
+| `POST /api/clients/<id>/archive/`, `/restore/` | logged on the timeline |
+| `GET /api/clients/<id>/timeline/` | paginated, newest first (includes pre-conversion lead history) |
+| `GET/POST /api/clients/<id>/contacts/` , `PATCH/DELETE .../<cid>/` | one primary contact per client |
+| `GET/POST /api/clients/<id>/notes/`, `DELETE .../<nid>/` | author or manager can delete |
+| `GET/POST /api/tags/`, `PATCH/DELETE /api/tags/<id>/` | assign with `tag_ids` on a client |
+| `GET/POST /api/leads/` | `?stage=lead\|contacted\|proposal\|won\|lost\|open`, `?q=`, `?ordering=-value_minor` |
+| `GET /api/leads/board/` | Kanban: every stage with count, total value and its leads |
+| `POST /api/leads/<id>/move/` `{"stage": "proposal"}` | stamps `closed_at` for won/lost, logs the move |
+| `POST /api/leads/<id>/convert/` (optional `{"client_id": N}`) | creates a client + primary contact, marks the lead won |
+| `GET /api/crm/stats/` | active/archived clients, pipeline value, conversion rate |
 
-## Endpoints
-Public domain (`localhost:8000`) and tenant domains (`acme.localhost:8000`):
-`POST /api/auth/register/`, `GET|POST /api/auth/verify-email/`, `POST /api/auth/resend-verification/`,
-`POST /api/auth/login/`, `POST /api/auth/refresh/`, `GET /api/auth/me/`
-
-Public domain only: `POST /api/tenants/signup/` (login required; caller becomes Owner)
-
-Tenant domains only: `/api/clients/`, `/api/business-profile/`, `GET|PATCH|DELETE /api/team/members/`,
-`GET|POST|DELETE /api/team/invites/`, `POST /api/team/invites/accept/`
-
-Emails (verification, invites) print in the `web` container logs: `docker compose logs web`.
+Money is an integer in minor units (`value_minor`: 5000000 = 50,000.00 INR).
