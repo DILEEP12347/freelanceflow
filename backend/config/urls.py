@@ -10,4 +10,5 @@ urlpatterns = [
     path("api/team/", include("apps.tenants.team_urls")),
     path("api/business-profile/", BusinessProfileView.as_view()),
     path("api/", include("apps.crm.urls")),
+    path("api/", include("apps.invoicing.urls")),
 ]

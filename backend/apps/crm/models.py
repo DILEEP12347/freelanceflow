@@ -114,10 +114,16 @@ class ActivityKind(models.TextChoices):
     LEAD_CREATED = "lead_created", "Lead created"
     STAGE_CHANGED = "stage_changed", "Stage changed"
     LEAD_CONVERTED = "lead_converted", "Lead converted"
+    INVOICE_CREATED = "invoice_created", "Invoice created"
+    INVOICE_SENT = "invoice_sent", "Invoice sent"
+    INVOICE_PAID = "invoice_paid", "Invoice paid"
+    INVOICE_VOIDED = "invoice_voided", "Invoice voided"
+    PAYMENT_RECORDED = "payment_recorded", "Payment recorded"
+    PAYMENT_DELETED = "payment_deleted", "Payment removed"
 
 
 class Activity(models.Model):
-    """Append-only timeline entry. Week 4+ adds invoice and payment events here."""
+    """Append-only timeline entry. Invoice and payment events (Week 4) land here too."""
 
     kind = models.CharField(max_length=30, choices=ActivityKind.choices)
     message = models.TextField(blank=True)

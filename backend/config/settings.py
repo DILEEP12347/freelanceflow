@@ -32,6 +32,7 @@ TENANT_APPS = [
     "django.contrib.contenttypes",
     "apps.crm",
     "apps.business",  # Week 2: BusinessProfile (one per tenant schema)
+    "apps.invoicing",  # Week 4: invoices, line items, tax rates, payments
 ]
 
 INSTALLED_APPS = list(SHARED_APPS) + [a for a in TENANT_APPS if a not in SHARED_APPS]

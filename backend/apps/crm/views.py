@@ -1,4 +1,4 @@
-from django.db.models import Q
+from django.db.models import ProtectedError, Q
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from rest_framework import mixins, status, viewsets
@@ -77,6 +77,16 @@ class ClientViewSet(_CrmViewSet):
                 qs = qs.filter(tags__pk=int(tag)) if tag.isdigit() else qs.filter(tags__name__iexact=tag)
                 qs = qs.distinct()
         return qs
+
+    def destroy(self, request, *args, **kwargs):
+        try:
+            return super().destroy(request, *args, **kwargs)
+        except ProtectedError:
+            # Invoices are legal records: a client that has any cannot be deleted, only archived.
+            return Response(
+                {"detail": "This client has invoices and cannot be deleted. Archive it instead."},
+                status=status.HTTP_409_CONFLICT,
+            )
 
     def perform_create(self, serializer):
         # Week 5: enforce the plan's active-client limit here (usage.active_client_count()).
