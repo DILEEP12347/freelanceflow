@@ -1,6 +1,8 @@
-from django.db import transaction
+from django.db import connection, transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
+
+from apps.billing.limits import enforce_limit
 
 from .models import (
     CLOSED_STAGES,
@@ -11,6 +13,7 @@ from .models import (
     Contact,
     LeadStage,
 )
+from .usage import active_client_count
 
 
 def actor_fields(user):
@@ -38,10 +41,10 @@ def archive_client(client, actor):
 
 
 def restore_client(client, actor):
-    # Week 5: an archived client coming back counts toward the plan's active-client limit,
-    # so the limit check goes here.
     if client.status == ClientStatus.ACTIVE:
         return client
+    # An archived client coming back counts toward the plan's active-client limit.
+    enforce_limit(connection.tenant, "max_active_clients", active_client_count())
     client.status = ClientStatus.ACTIVE
     client.archived_at = None
     client.save(update_fields=["status", "archived_at", "updated_at"])
@@ -82,7 +85,8 @@ def convert_lead(lead, actor, client=None):
         raise ValidationError({"detail": "This lead is already linked to a client."})
     with transaction.atomic():
         if client is None:
-            # Week 5: creating an active client counts toward the plan limit, so check it here.
+            # Creating an active client counts toward the plan limit (linking an existing client does not).
+            enforce_limit(connection.tenant, "max_active_clients", active_client_count())
             client = Client.objects.create(
                 name=lead.company_name or lead.contact_name or lead.title,
                 company_name=lead.company_name,

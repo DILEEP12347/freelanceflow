@@ -9,6 +9,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
+from apps.billing.limits import enforce_limit
 from apps.common.urls_util import site_url
 
 from .models import Domain, Invitation, Membership, Role, Tenant
@@ -51,9 +52,19 @@ def hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def seats_in_use(tenant: Tenant, exclude_email=None) -> int:
+    """Members plus still-valid pending invitations: what the plan's team-size limit counts."""
+    pending = Invitation.objects.filter(tenant=tenant, accepted_at__isnull=True, expires_at__gt=timezone.now())
+    if exclude_email:
+        pending = pending.exclude(email__iexact=exclude_email)
+    return Membership.objects.filter(tenant=tenant).count() + pending.count()
+
+
 def create_invitation(tenant: Tenant, email: str, role: str, invited_by):
     """Returns (invitation, raw_token). The raw token exists only in the email; we keep its hash."""
     email = email.strip().lower()
+    # Members plus pending invites count as seats. Re-inviting the same address does not take a second seat.
+    enforce_limit(tenant, "max_team_members", seats_in_use(tenant, exclude_email=email))
     # Re-inviting the same address replaces the old pending invite.
     Invitation.objects.filter(tenant=tenant, email__iexact=email, accepted_at__isnull=True).delete()
     raw = secrets.token_urlsafe(32)

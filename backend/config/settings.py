@@ -18,6 +18,7 @@ SITE_PORT = os.environ.get("SITE_PORT", "8000")
 SHARED_APPS = [
     "django_tenants",  # must be first
     "apps.tenants",
+    "apps.billing",  # Week 5: plans, subscriptions, Stripe events (public schema)
     "apps.accounts",
     "django.contrib.contenttypes",
     "django.contrib.auth",
@@ -119,3 +120,15 @@ USE_TZ = True
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 WSGI_APPLICATION = "config.wsgi.application"
+
+
+# --- Billing (Stripe, Week 5) ---
+# Use TEST keys (sk_test_...) while developing. Never commit real keys: they belong in .env.
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")  # whsec_... from `stripe listen` or the dashboard
+STRIPE_PRICE_IDS = {  # Stripe Price ids (price_...) for the paid plans; a Plan row's stripe_price_id also works
+    "pro": os.environ.get("STRIPE_PRICE_PRO", ""),
+    "business": os.environ.get("STRIPE_PRICE_BUSINESS", ""),
+}
+BILLING_GRACE_DAYS = int(os.environ.get("BILLING_GRACE_DAYS", "7"))  # paid features stay on this long after a failed payment
+BILLING_RETURN_PATH = os.environ.get("BILLING_RETURN_PATH", "/settings/billing")  # where Stripe sends people back to

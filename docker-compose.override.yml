@@ -1,0 +1,7 @@
+# Week 5: pass everything in .env (including the Stripe keys) to the Django and Celery containers.
+# Docker Compose merges this file into docker-compose.yml automatically. Never commit .env: it holds secrets.
+services:
+  web:
+    env_file: .env
+  worker:
+    env_file: .env

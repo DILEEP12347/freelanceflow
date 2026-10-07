@@ -8,6 +8,7 @@ from rest_framework.filters import OrderingFilter
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.billing.limits import enforce_limit
 from apps.common.filters import QSearchFilter
 from apps.common.pagination import StandardPagination
 from apps.common.permissions import (
@@ -37,7 +38,7 @@ from .services import (
     move_lead,
     restore_client,
 )
-from .usage import usage_snapshot
+from .usage import active_client_count, usage_snapshot
 
 
 class _CrmViewSet(viewsets.ModelViewSet):
@@ -89,7 +90,7 @@ class ClientViewSet(_CrmViewSet):
             )
 
     def perform_create(self, serializer):
-        # Week 5: enforce the plan's active-client limit here (usage.active_client_count()).
+        enforce_limit(self.request.tenant, "max_active_clients", active_client_count())
         client = serializer.save()
         log_activity(ActivityKind.CLIENT_CREATED, f"Created {client.name}", self.request.user, client=client)
 

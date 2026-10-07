@@ -7,6 +7,7 @@ from django.db.models import Count, F, Q, Sum
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
+from apps.billing.limits import enforce_limit
 from apps.business.models import BusinessProfile
 from apps.crm.models import ActivityKind, ClientStatus
 from apps.crm.services import log_activity
@@ -101,6 +102,12 @@ def build_snapshot(client, profile, currency="INR") -> dict:
     }
 
 
+def invoices_sent_this_month() -> int:
+    """Invoices that went out since the 1st of this month (UTC). Voided ones still count: they used a number."""
+    start = timezone.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return Invoice.objects.filter(sent_at__gte=start).count()
+
+
 # ---------------- numbering ----------------
 def next_invoice_number(prefix: str) -> str:
     """Call inside transaction.atomic(). Locks the counter row so numbers are unique and consecutive."""
@@ -173,6 +180,7 @@ def send_invoice(invoice: Invoice, actor, issue_date=None, due_date=None) -> Inv
         raise ValidationError({"detail": "The invoice total must be greater than zero."})
     client = invoice.client
     _require_active_client(client)
+    enforce_limit(connection.tenant, "max_invoices_per_month", invoices_sent_this_month())
 
     issue = issue_date or invoice.issue_date or timezone.localdate()
     due = due_date or invoice.due_date or default_due_date(issue, client.payment_terms_days)
