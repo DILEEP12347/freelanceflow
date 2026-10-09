@@ -7,3 +7,4 @@ celery>=5.4
 redis>=5.0
 reportlab>=4.2,<5
 stripe>=10,<15
+tzdata

@@ -1,7 +1,10 @@
-# Week 5: pass everything in .env (including the Stripe keys) to the Django and Celery containers.
+# Passes everything in .env (Stripe keys, email settings...) to the Django and Celery containers.
 # Docker Compose merges this file into docker-compose.yml automatically. Never commit .env: it holds secrets.
 services:
   web:
     env_file: .env
   worker:
     env_file: .env
+    # Week 6: -B runs the Celery scheduler ("beat") inside the worker, so the hourly jobs (recurring invoices,
+    # payment reminders) fire without a separate service. Fine for development; on a real server run beat on its own.
+    command: celery -A config worker -B -l info

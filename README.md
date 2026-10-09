@@ -1,8 +1,8 @@
-# FreelanceFlow (through Week 5)
+# FreelanceFlow (through Week 6)
 
 Multi-tenant Django backend: schema-per-tenant (django-tenants), subdomain routing, JWT auth,
 role-based access, team invites, a CRM (clients, contacts, notes, tags, lead pipeline, timeline),
-invoicing (line items, GST, numbering, payments, PDF), Stripe subscription billing with plan limits, Postgres, Redis, Celery.
+invoicing (line items, GST, numbering, payments, PDF), Stripe subscription billing with plan limits, a client portal, emailed invoices, payment reminders and recurring invoices, Postgres, Redis, Celery.
 
 ## Run
 ```bash
@@ -75,9 +75,7 @@ Totals are always computed by the server. A foreign `currency` needs an `exchang
 
 ## Known limits (on purpose, for now)
 - PDF uses a built-in font: no Hindi/Tamil/other scripts and no rupee sign (money prints as `INR 1,000.00`).
-- Dates use the server's UTC day. A per-business timezone arrives with the Week 6 overdue job.
 - Money formatting assumes 2 decimal places (fine for INR/USD/EUR/GBP, not JPY).
-- Sending only changes the status. Week 6 adds the email with the PDF attached.
 
 ## Billing (Stripe) — Week 5
 Every organization has a subscription: **Free** until it pays. Plans and their limits are rows in the database
@@ -102,7 +100,7 @@ the real price lives in the Stripe Price you create.
 
 For a deployed server, create a webhook endpoint in the dashboard pointing at `https://<your bare domain>/api/billing/webhook/` and subscribe it to:
 `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`,
-`customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`.
+`customer.subscription.deleted`, `customer.subscription.trial_will_end`, `invoice.paid`, `invoice.payment_failed`.
 
 ### Endpoints
 | Endpoint | Who | Notes |
@@ -134,3 +132,69 @@ For a deployed server, create a webhook endpoint in the dashboard pointing at `h
 - Plan limits are checked just before the action, not under a lock: two simultaneous requests could exceed a limit by one.
 - Team limit counts members plus pending invitations; accepting an invite never re-checks the limit.
 - Real-money payments in India have extra Stripe requirements. This week is built and tested for Stripe **test mode**.
+
+## Email, portal, reminders, recurring invoices, timezone — Week 6
+
+### How the background work runs
+Slow or scheduled work runs in Celery, never inside a web request. The `worker` container runs the tasks and, in development,
+the scheduler too (`celery -A config worker -B`, set in `docker-compose.override.yml`). Tasks get plain values (schema name,
+ids), switch to the organization's schema, and do the work. In development emails print in the **worker** logs
+(`docker compose logs worker`), because that is where they are sent from. Tests run tasks inline (`CELERY_TASK_ALWAYS_EAGER`).
+
+Once an hour the scheduler runs `invoicing.run_scheduled_jobs`. For each organization it runs the daily jobs **once per local day,
+at the first run after 09:00 in that organization's timezone**: first recurring invoices, then payment reminders. Both are
+idempotent, so a crash halfway just retries at the next tick. To run them by hand:
+`docker compose exec web python manage.py run_scheduled --subdomain acme --force`
+
+### Timezone and settings: `GET/PATCH /api/invoicing/settings/`
+| Field | Default | Meaning |
+|---|---|---|
+| `timezone` | `UTC` | e.g. `Asia/Kolkata`. Decides what "today" is for due dates, overdue, reminders and the monthly invoice limit |
+| `reminders_enabled` | true | master switch for payment reminders |
+| `reminder_offsets` | `[-3, 1, 7, 14]` | days relative to the due date (negative = before). At most 6, each between -30 and 120 |
+| `email_signature` | empty | closes every email |
+
+### Emailing an invoice
+- `POST /api/invoices/<id>/send/` with `{"email": true}` also emails the PDF to the client. Without the flag it only changes the status.
+- `POST /api/invoices/<id>/email/` (optional `{"message": "..."}`) re-sends it. Only sent invoices with a balance can be emailed.
+- Recipient: the primary contact's email, else any contact with an email, else the client's email. With none, the API says so (nothing fails).
+- The email contains the portal link when the plan includes `client_portal`.
+- Real email: set `EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend`, `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`,
+  `EMAIL_HOST_PASSWORD` in `.env`.
+
+### Client portal (Pro and Business)
+- `GET /api/invoices/<id>/portal-link/` returns `{"enabled", "url"}`. `POST` replaces the link (the old one stops working).
+- `GET /portal/<token>/` is a public page (no login) with a Download PDF button. `/portal/<token>/pdf/` is the PDF and
+  `/api/portal/<token>/` is the JSON twin for a future React portal.
+- The token is 192 random bits. Unknown, draft or wrong-organization tokens all answer 404. The page works only while the plan
+  includes the portal. Responses are `no-store` and `noindex`, rate limited to 60/min per IP, and all client text is HTML-escaped.
+- The first view is recorded (`viewed_at`, plus a timeline entry).
+
+### Payment reminders (all plans)
+- At most **one reminder per invoice per day**, the most recent applicable one. Older offsets that were never sent are recorded as
+  skipped, so a late invoice gets one email, not a burst.
+- A reminder is claimed (unique per invoice and offset) before it is queued, so a repeated run can never double-send.
+- Never on the day the invoice itself was sent. Paid and void invoices are left alone. Wording follows reality: "is due in 3 days",
+  "is overdue by 7 days".
+
+### Recurring invoices (Pro and Business): `/api/recurring-invoices/`
+- Create with a client, `frequency` (`weekly`, `monthly`, `quarterly`, `yearly`), `interval`, `start_date`, `lines`, optional
+  `end_date`, `max_runs`, `auto_send`. The first run cannot be in the past.
+- Each run creates a **draft** (or sends and emails it with `auto_send`). If auto-send is blocked (plan limit), the draft stays
+  and `last_error` says why. If the client was archived the schedule pauses with `last_error`.
+- Dates are counted from the start date, so "monthly from the 31st" gives Feb 28, Mar 31, Apr 30 and never drifts.
+- The schedule advances in the same transaction that creates the invoice: a crash can neither skip a period nor bill it twice.
+  A missed schedule catches up one invoice per day, never a flood.
+- `pause`, `resume` (after a long pause it continues from today instead of back-dating), `run-now`. The schedule (frequency,
+  interval, start date) is locked once an invoice has been created. Deleting a schedule keeps the invoices it made.
+
+### Billing emails
+The owner gets one email when a payment first fails (not one per card retry) and one before a trial ends
+(`customer.subscription.trial_will_end`). Emails are queued only after the database transaction commits.
+
+## Known limits (Week 6)
+- Emails are plain text with the PDF attached. The PDF still uses a built-in font (no Hindi/Tamil, no rupee sign).
+- Reminders and the daily jobs run at most hourly; "9am" is approximate to the hour.
+- Reminder claiming is at-most-once: if the mail server is down for longer than the retries (3), that reminder is not re-sent.
+- The portal is read-only: there is no online payment button yet (Stripe Connect is the Week 8 stretch).
+- In development the scheduler runs inside the worker. In production run `celery -A config beat` as its own single process.

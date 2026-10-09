@@ -120,6 +120,9 @@ class ActivityKind(models.TextChoices):
     INVOICE_VOIDED = "invoice_voided", "Invoice voided"
     PAYMENT_RECORDED = "payment_recorded", "Payment recorded"
     PAYMENT_DELETED = "payment_deleted", "Payment removed"
+    INVOICE_EMAILED = "invoice_emailed", "Invoice emailed"
+    REMINDER_SENT = "reminder_sent", "Reminder sent"
+    PORTAL_VIEWED = "portal_viewed", "Client viewed invoice"
 
 
 class Activity(models.Model):

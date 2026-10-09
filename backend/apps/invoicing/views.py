@@ -7,15 +7,22 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.filters import OrderingFilter
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from apps.common.filters import QSearchFilter
+from apps.billing.limits import has_feature, requires_feature
 from apps.common.pagination import StandardPagination
 from apps.common.permissions import ALL_ROLES, FINANCE_ROLES, MANAGER_ROLES, TenantRolePermission
 
 from . import services
-from .models import Invoice, InvoiceStatus, Payment, TaxRate
+from .emails import recipient_for
+from .models import Invoice, InvoiceSettings, InvoiceStatus, Payment, RecurringInvoice, RecurringStatus, TaxRate
+from .timeutils import business_today
 from .pdf import render_invoice_pdf
 from .serializers import (
+    EmailInvoiceSerializer,
+    InvoiceSettingsSerializer,
+    RecurringInvoiceSerializer,
     InvoiceListSerializer,
     InvoiceSerializer,
     PaymentSerializer,
@@ -74,7 +81,7 @@ class InvoiceViewSet(_FinanceViewSet):
         params = self.request.query_params
         status_param = params.get("status")
         if status_param == "overdue":
-            qs = qs.filter(status__in=OPEN, due_date__lt=timezone.localdate())
+            qs = qs.filter(status__in=OPEN, due_date__lt=business_today())
         elif status_param == "open":
             qs = qs.filter(status__in=OPEN)
         elif status_param:
@@ -109,8 +116,41 @@ class InvoiceViewSet(_FinanceViewSet):
         """draft -> sent. Assigns the invoice number. Optional body: {"issue_date", "due_date"}."""
         body = SendInvoiceSerializer(data=request.data)
         body.is_valid(raise_exception=True)
-        invoice = services.send_invoice(self.get_object(), request.user, **body.validated_data)
-        return Response(InvoiceSerializer(self._fresh(invoice)).data)
+        options = dict(body.validated_data)
+        want_email = options.pop("email", False)
+        invoice = services.send_invoice(self.get_object(), request.user, **options)
+        payload = dict(InvoiceSerializer(self._fresh(invoice)).data)
+        payload["email_queued"] = bool(want_email and recipient_for(invoice))
+        if payload["email_queued"]:
+            services.queue_invoice_email(invoice)
+        elif want_email:
+            payload["email_note"] = "No email address on the client or its contacts, so nothing was emailed."
+        return Response(payload)
+
+    @action(detail=True, methods=["post"])
+    def email(self, request, pk=None):
+        """Email the invoice (PDF attached) to the client's primary contact. Optional body: {"message"}."""
+        body = EmailInvoiceSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        invoice = self.get_object()
+        if invoice.status not in (InvoiceStatus.SENT, InvoiceStatus.PARTIAL):
+            raise ValidationError({"detail": "Only sent invoices with a balance due can be emailed."})
+        to = recipient_for(invoice)
+        if not to:
+            raise ValidationError({"detail": "No email address. Add one to the client or to one of its contacts."})
+        services.queue_invoice_email(invoice, message=body.validated_data.get("message", ""))
+        return Response({"detail": "Email queued.", "to": to}, status=202)
+
+    @action(detail=True, methods=["get", "post"], url_path="portal-link")
+    def portal_link(self, request, pk=None):
+        """GET: the public client-portal link. POST: replace it (the old link stops working)."""
+        invoice = self.get_object()
+        if invoice.status == InvoiceStatus.DRAFT:
+            raise ValidationError({"detail": "Send the invoice first: drafts have no portal link."})
+        if request.method == "POST":
+            services.rotate_portal_token(invoice)
+        enabled = has_feature(request.tenant, "client_portal")
+        return Response({"enabled": enabled, "url": services.portal_url(invoice) if enabled else None})
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
@@ -158,3 +198,58 @@ class PaymentViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, mixins.Dest
 
     def perform_destroy(self, instance):
         services.delete_payment(instance, self.request.user)
+
+
+class InvoiceSettingsView(APIView):
+    """GET/PATCH /api/invoicing/settings/ : reminders, timezone and the email signature."""
+
+    permission_classes = [TenantRolePermission]
+    read_roles = ALL_ROLES
+    write_roles = FINANCE_ROLES
+
+    def get(self, request):
+        return Response(InvoiceSettingsSerializer(InvoiceSettings.load()).data)
+
+    def patch(self, request):
+        serializer = InvoiceSettingsSerializer(InvoiceSettings.load(), data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+
+class RecurringInvoiceViewSet(viewsets.ModelViewSet):
+    """Pro plan. ?status=active|paused|ended. Each run creates a draft invoice (or sends it, with auto_send)."""
+
+    serializer_class = RecurringInvoiceSerializer
+    pagination_class = StandardPagination
+    permission_classes = [TenantRolePermission, requires_feature("recurring_invoices")]
+    read_roles = ALL_ROLES
+    write_roles = FINANCE_ROLES
+    action_roles = {"destroy": MANAGER_ROLES}
+    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
+
+    def get_queryset(self):
+        qs = RecurringInvoice.objects.select_related("client")
+        status_param = self.request.query_params.get("status")
+        if status_param:
+            if status_param not in RecurringStatus.values:
+                raise ValidationError({"status": "Use active, paused or ended."})
+            qs = qs.filter(status=status_param)
+        return qs
+
+    @action(detail=True, methods=["post"])
+    def pause(self, request, pk=None):
+        return Response(self.get_serializer(services.pause_recurring(self.get_object())).data)
+
+    @action(detail=True, methods=["post"])
+    def resume(self, request, pk=None):
+        return Response(self.get_serializer(services.resume_recurring(self.get_object())).data)
+
+    @action(detail=True, methods=["post"], url_path="run-now")
+    def run_now(self, request, pk=None):
+        """Create the next invoice immediately (it counts as a run and moves the schedule forward)."""
+        invoice = services.generate_next(self.get_object().pk, force=True)
+        if invoice is None:
+            rec = RecurringInvoice.objects.get(pk=pk)
+            raise ValidationError({"detail": rec.last_error or "This schedule is not active."})
+        return Response({"invoice_id": invoice.pk, "number": invoice.number, "status": invoice.status}, status=201)

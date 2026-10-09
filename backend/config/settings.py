@@ -1,4 +1,5 @@
 import os
+import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -110,9 +111,24 @@ SIMPLE_JWT = {
 # --- Email: prints to the `web` container logs in development -------------
 EMAIL_BACKEND = os.environ.get("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
 DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "FreelanceFlow <no-reply@freelanceflow.local>")
+# Real email: set EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend plus the four values below in .env.
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "localhost")
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "1") == "1"
 
 CELERY_BROKER_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
+# Run tasks inline (no Redis, no worker) while testing, or when CELERY_TASK_ALWAYS_EAGER=1 is set in .env.
+CELERY_TASK_ALWAYS_EAGER = os.environ.get("CELERY_TASK_ALWAYS_EAGER", "") == "1" or "test" in sys.argv
+CELERY_TASK_EAGER_PROPAGATES = True
+BUSINESS_TZ_CACHE_SECONDS = 0 if "test" in sys.argv else 30  # how long an organization's timezone is remembered
+CELERY_BEAT_SCHEDULE = {
+    # Hourly, because "9am" is different in every organization's timezone. Each organization's daily jobs
+    # (recurring invoices, payment reminders) run once per local day, at the first run after 9:00 their time.
+    "business-daily-jobs": {"task": "invoicing.run_scheduled_jobs", "schedule": 3600.0},
+}
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"

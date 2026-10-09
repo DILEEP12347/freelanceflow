@@ -10,10 +10,13 @@ Guarantees:
 """
 import logging
 from datetime import timedelta
+from functools import partial
 
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+
+from apps.common.tasks import dispatch
 
 from .models import StripeEvent, Subscription, SubscriptionStatus
 from .plans import get_free_plan, plan_for_price_id
@@ -22,6 +25,13 @@ from .stripe_payloads import extract_period_end, extract_price_id, extract_tenan
 logger = logging.getLogger(__name__)
 
 ENDED = (SubscriptionStatus.CANCELED, "incomplete_expired")
+
+
+def _notify(sub, kind):
+    """Queue an email to the owner, but only after this transaction commits (a rolled-back event sends nothing)."""
+    from .tasks import send_billing_notice
+
+    transaction.on_commit(partial(dispatch, send_billing_notice, sub.tenant_id, kind))
 
 
 def _find_subscription(obj):
@@ -66,6 +76,7 @@ def _on_subscription(event, obj):
     ts = int(event.get("created") or 0)
     if _stale(sub, ts):
         return
+    previous_status = sub.status
     status = obj.get("status") or sub.status
     ended = event["type"] == "customer.subscription.deleted" or status in ENDED
 
@@ -98,6 +109,8 @@ def _on_subscription(event, obj):
             sub.grace_until = _grace_deadline(ts)
     sub.last_event_ts = ts
     sub.save()
+    if status == SubscriptionStatus.PAST_DUE and previous_status != SubscriptionStatus.PAST_DUE and not ended:
+        _notify(sub, "payment_failed")
 
 
 def _on_invoice_paid(event, obj):
@@ -119,15 +132,25 @@ def _on_invoice_payment_failed(event, obj):
     ts = int(event.get("created") or 0)
     if sub is None or _stale(sub, ts):
         return
+    newly_past_due = False
     if not sub.plan.is_free and sub.status in (
         SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING, SubscriptionStatus.PAST_DUE
     ):
+        newly_past_due = sub.status != SubscriptionStatus.PAST_DUE
         sub.status = SubscriptionStatus.PAST_DUE
         if sub.grace_until is None:
             sub.grace_until = _grace_deadline(ts)
-        # Week 6: email the owner "your payment failed" from here (Celery task).
     sub.last_event_ts = ts
     sub.save()
+    if newly_past_due:  # one email when the problem starts, not one per card retry
+        _notify(sub, "payment_failed")
+
+
+def _on_trial_will_end(event, obj):
+    """Stripe sends this about 3 days before a trial ends."""
+    sub = _find_subscription(obj)
+    if sub is not None and sub.status == SubscriptionStatus.TRIALING:
+        _notify(sub, "trial_ending")
 
 
 HANDLERS = {
@@ -135,6 +158,7 @@ HANDLERS = {
     "customer.subscription.created": _on_subscription,
     "customer.subscription.updated": _on_subscription,
     "customer.subscription.deleted": _on_subscription,
+    "customer.subscription.trial_will_end": _on_trial_will_end,
     "invoice.paid": _on_invoice_paid,
     "invoice.payment_failed": _on_invoice_payment_failed,
 }

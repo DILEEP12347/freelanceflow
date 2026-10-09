@@ -1,4 +1,5 @@
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from rest_framework import serializers
 
@@ -6,7 +7,9 @@ from apps.crm.models import Client
 
 from . import services
 from .calculations import tax_summary
-from .models import Invoice, InvoiceLine, Payment, TaxRate
+from .calculations import line_amounts
+from .models import Invoice, InvoiceLine, InvoiceSettings, Payment, RecurringInvoice, TaxRate
+from .timeutils import business_today
 
 
 def _clean_currency(value):
@@ -111,11 +114,12 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "subtotal_minor", "tax_minor", "total_minor", "amount_paid_minor", "balance_due_minor",
             "notes", "terms", "void_reason", "snapshot", "tax_summary", "gst_mode", "lines", "payments",
             "created_by_email", "created_at", "updated_at", "sent_at", "paid_at", "voided_at",
+            "viewed_at", "emailed_at", "recurring",
         ]
         read_only_fields = [
             "id", "number", "status", "subtotal_minor", "tax_minor", "total_minor", "amount_paid_minor",
             "void_reason", "snapshot", "created_by_email", "created_at", "updated_at", "sent_at",
-            "paid_at", "voided_at",
+            "paid_at", "voided_at", "viewed_at", "emailed_at", "recurring",
         ]
 
     def get_tax_summary(self, obj):
@@ -156,7 +160,91 @@ class InvoiceSerializer(serializers.ModelSerializer):
 class SendInvoiceSerializer(serializers.Serializer):
     issue_date = serializers.DateField(required=False)
     due_date = serializers.DateField(required=False)
+    email = serializers.BooleanField(required=False, default=False)  # also email it (PDF attached) to the client
+
+
+class EmailInvoiceSerializer(serializers.Serializer):
+    message = serializers.CharField(required=False, allow_blank=True, max_length=1000)
 
 
 class VoidInvoiceSerializer(serializers.Serializer):
     reason = serializers.CharField(required=False, allow_blank=True, max_length=255)
+
+
+class InvoiceSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = InvoiceSettings
+        fields = ["reminders_enabled", "reminder_offsets", "timezone", "email_signature", "last_daily_run_on"]
+        read_only_fields = ["last_daily_run_on"]
+
+    def validate_timezone(self, value):
+        try:
+            ZoneInfo(value)
+        except Exception:
+            raise serializers.ValidationError("Unknown timezone. Use a name like Asia/Kolkata or UTC.") from None
+        return value
+
+    def validate_reminder_offsets(self, value):
+        if not isinstance(value, list) or len(value) > 6:
+            raise serializers.ValidationError("Give a list of at most 6 whole numbers.")
+        if any(isinstance(v, bool) or not isinstance(v, int) or not -30 <= v <= 120 for v in value):
+            raise serializers.ValidationError("Each value is a number of days between -30 and 120 (negative = before the due date).")
+        if len(set(value)) != len(value):
+            raise serializers.ValidationError("Each value can appear only once.")
+        return sorted(value)
+
+
+class RecurringInvoiceSerializer(serializers.ModelSerializer):
+    """Send `lines` exactly as for an invoice. Totals are computed by the server."""
+
+    client_name = serializers.CharField(source="client.name", read_only=True)
+    lines = InvoiceLineInputSerializer(many=True, write_only=True, required=False)
+    invoice_count = serializers.SerializerMethodField()
+    estimated_total_minor = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RecurringInvoice
+        fields = [
+            "id", "name", "client", "client_name", "frequency", "interval", "start_date", "next_run_date",
+            "end_date", "max_runs", "runs_count", "status", "auto_send", "currency", "exchange_rate",
+            "lines", "notes", "terms", "last_run_at", "last_error", "invoice_count", "estimated_total_minor",
+            "created_at",
+        ]
+        read_only_fields = ["id", "next_run_date", "runs_count", "status", "last_run_at", "last_error", "created_at"]
+        extra_kwargs = {"interval": {"min_value": 1, "max_value": 52}, "max_runs": {"min_value": 1}}
+
+    def get_invoice_count(self, obj):
+        return obj.invoices.count()
+
+    def get_estimated_total_minor(self, obj):
+        return sum(line_amounts(l["quantity"], l["unit_price_minor"], l["tax_rate_bps"])[2] for l in obj.lines)
+
+    def validate_currency(self, value):
+        return _clean_currency(value)
+
+    def validate(self, attrs):
+        start = attrs.get("start_date", getattr(self.instance, "start_date", None))
+        end = attrs.get("end_date", getattr(self.instance, "end_date", None))
+        if self.instance is None:
+            if not attrs.get("lines"):
+                raise serializers.ValidationError({"lines": "Add at least one line item."})
+            if start is None:
+                raise serializers.ValidationError({"start_date": "Required."})
+            if start < business_today():
+                raise serializers.ValidationError({"start_date": "The first run cannot be in the past."})
+        if start and end and end < start:
+            raise serializers.ValidationError({"end_date": "The end date cannot be before the start date."})
+        return attrs
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["lines"] = instance.lines
+        return data
+
+    def create(self, validated_data):
+        lines = validated_data.pop("lines")
+        return services.create_recurring(self.context["request"].user, lines=lines, **validated_data)
+
+    def update(self, instance, validated_data):
+        lines = validated_data.pop("lines", None)
+        return services.update_recurring(instance, lines=lines, **validated_data)
