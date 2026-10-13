@@ -4,7 +4,7 @@ calendar day in the timezone set in Invoicing settings (default UTC), not the se
 The timezone is cached per schema for BUSINESS_TZ_CACHE_SECONDS (30; 0 while testing), because 'overdue' is evaluated for every invoice in a list.
 """
 import time
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
@@ -50,3 +50,12 @@ def business_month_start() -> datetime:
     """Midnight on the 1st of this month in the business's timezone (an aware datetime)."""
     first = business_today().replace(day=1)
     return datetime.combine(first, dtime.min, tzinfo=get_zone())
+
+
+def local_day_bounds(start_date=None, end_date=None):
+    """(start, end) as aware datetimes for filtering timestamps by calendar day in the business timezone:
+    start = the first moment of start_date, end = the first moment AFTER end_date (use as `< end`). None where absent."""
+    zone = get_zone()
+    start = datetime.combine(start_date, dtime.min, tzinfo=zone) if start_date else None
+    end = datetime.combine(end_date + timedelta(days=1), dtime.min, tzinfo=zone) if end_date else None
+    return start, end

@@ -35,6 +35,8 @@ TENANT_APPS = [
     "apps.crm",
     "apps.business",  # Week 2: BusinessProfile (one per tenant schema)
     "apps.invoicing",  # Week 4: invoices, line items, tax rates, payments
+    "apps.work",  # Week 7: projects, time tracking, expenses
+    "apps.audit",  # Week 7: audit log
 ]
 
 INSTALLED_APPS = list(SHARED_APPS) + [a for a in TENANT_APPS if a not in SHARED_APPS]
@@ -52,6 +54,7 @@ MIDDLEWARE = [
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
+    "apps.audit.middleware.AuditMiddleware",  # Week 7: records state-changing API calls
 ]
 
 TEMPLATES = [

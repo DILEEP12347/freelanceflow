@@ -235,6 +235,9 @@ def void_invoice(invoice: Invoice, actor, reason="") -> Invoice:
     invoice.voided_at = timezone.now()
     invoice.void_reason = (reason or "")[:255]
     invoice.save()
+    from apps.work.services import release_work  # imported here: apps.work depends on this module
+
+    release_work(invoice)
     log_activity(
         ActivityKind.INVOICE_VOIDED, f"Invoice {invoice.number} voided", actor,
         client=invoice.client, metadata={"invoice_id": invoice.pk, "reason": invoice.void_reason},

@@ -12,5 +12,8 @@ urlpatterns = [
     path("api/", include("apps.crm.urls")),
     path("api/", include("apps.invoicing.urls")),
     path("api/", include("apps.billing.urls")),
+    path("api/", include("apps.work.urls")),
+    path("api/", include("apps.reports.urls")),
+    path("api/", include("apps.audit.urls")),
     path("", include("apps.invoicing.portal_urls")),  # public client portal: /portal/<token>/
 ]

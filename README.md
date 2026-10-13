@@ -1,14 +1,14 @@
-# FreelanceFlow (through Week 6)
+# FreelanceFlow (through Week 7)
 
 Multi-tenant Django backend: schema-per-tenant (django-tenants), subdomain routing, JWT auth,
 role-based access, team invites, a CRM (clients, contacts, notes, tags, lead pipeline, timeline),
-invoicing (line items, GST, numbering, payments, PDF), Stripe subscription billing with plan limits, a client portal, emailed invoices, payment reminders and recurring invoices, Postgres, Redis, Celery.
+invoicing (line items, GST, numbering, payments, PDF), Stripe subscription billing with plan limits, a client portal, emailed invoices, payment reminders and recurring invoices, time tracking and expenses, reports, an audit log and a platform admin dashboard, Postgres, Redis, Celery.
 
 ## Run
 ```bash
 cp .env.example .env
 docker compose up -d --build
-docker compose exec web python manage.py makemigrations accounts tenants business crm invoicing billing
+docker compose exec web python manage.py makemigrations accounts tenants business crm invoicing billing audit work
 docker compose exec web python manage.py migrate_schemas
 docker compose exec web python manage.py bootstrap_public
 docker compose exec web python manage.py seed_demo --subdomain acme       # optional sample CRM data
@@ -198,3 +198,70 @@ The owner gets one email when a payment first fails (not one per card retry) and
 - Reminder claiming is at-most-once: if the mail server is down for longer than the retries (3), that reminder is not re-sent.
 - The portal is read-only: there is no online payment button yet (Stripe Connect is the Week 8 stretch).
 - In development the scheduler runs inside the worker. In production run `celery -A config beat` as its own single process.
+
+## Time tracking, expenses, reports, audit log, platform admin — Week 7
+
+### Projects and time (all plans; owner/admin/accountant write, everyone reads)
+- `/api/projects/` (`?q=`, `?client=`, `?status=active|archived`): a project belongs to one client and has a default hourly rate
+  (minor units per hour) and currency. `archive` / `restore`. A project with time or expenses cannot be deleted (409): archive it.
+  Once time is logged, its client and currency are locked.
+- **Timer**: `POST /api/time/start/ {"project", "description"}`, `POST /api/time/<id>/stop/`, `GET /api/time/running/`.
+  Starting a timer stops any timer you still had running (one person, one thing at a time). Each person has their own.
+- **Manual time**: `POST /api/time/ {"project", "started_at", "ended_at" | "duration_minutes"}`. One entry is at most 24 hours and cannot
+  be in the future.
+- The hourly rate is **copied onto each entry**, so changing a project's rate never rewrites logged work.
+- `GET /api/time/` filters: `project`, `client`, `user=me|<id>`, `from`, `to` (calendar days in the business timezone), `billable`,
+  `billed`, `running`. The response also has `summary` (seconds, billable seconds, unbilled value) for everything that matches.
+- You can edit or delete your own entries; owners and admins can change anyone's. Entries already on an invoice are locked.
+
+### Expenses: `/api/expenses/` (`?q=`, `category`, `project`, `client`, `from`, `to`, `billable`, `billed`)
+`amount_minor` is the total paid and `tax_minor` the GST inside it (claimable). Mark an expense `billable` (with a client or project) to
+re-bill it. `GET /api/expenses/categories/` lists categories. The list includes a per-currency `summary`.
+
+### Billing work: `POST /api/work/invoice/`
+`{"client", "time_entry_ids": [...], "expense_ids": [...], "tax_rate_id": null, "group_by": "project" | "entry", "exchange_rate": null}`
+creates ONE draft invoice and marks the items as billed. Time becomes one line per project and rate (hours with 2 decimals, minimum 0.01),
+expenses are passed through at cost without tax. Everything is validated first and **all problems are returned together**
+(`items`): running timers, non-billable items, other clients, already-billed items, mixed currencies. Deleting the draft invoice, or
+voiding it after sending, gives the time and expenses back so they can be billed again.
+
+### Reports (Business plan, owner/admin/accountant): `/api/reports/...`
+All figures are per currency, in minor units, and exclude drafts and void invoices. `?from=&to=` default to the last 12 months (max 5 years).
+| Endpoint | What it shows |
+|---|---|
+| `revenue/` | invoiced (by issue date) and collected (by payment date) per month, including empty months |
+| `receivables/?as_of=` | what is owed now, by lateness: not due, 1-30, 31-60, 61-90, 90+ days, per client |
+| `profit-loss/` | accrual basis, **excluding tax**: income, expenses, profit, expenses by category, and GST collected vs GST paid (net payable) |
+| `clients/?limit=` | invoiced, collected and outstanding per client |
+| `time/` | hours per project and person, billed vs unbilled, and the value of unbilled work |
+`?export=csv` downloads revenue, receivables, profit-loss and clients as CSV. Text cells that start with `= + - @` are neutralized, so a client
+called `=SUM(...)` cannot run as a formula in Excel.
+
+### Audit log (recording on every plan; reading needs Business; owner/admin only): `GET /api/audit/`
+A middleware records every successful state-changing API call (and every refused one) with who, what, when, IP, and the request body
+with passwords, tokens and secrets removed. Examples: `invoice.sent`, `invoice.voided`, `payment.recorded`, `member.role_changed`,
+`client.deleted`, `auth.login` (including failed logins). Stripe-driven plan changes are recorded as `billing.subscription_updated`
+(actor `stripe`). New endpoints are covered automatically (unmapped ones appear as `post:path/<id>/...`).
+Filters: `action` (prefix, e.g. `invoice.`), `actor`, `object_type`, `object_id`, `outcome=ok|denied`, `from`, `to`, `q`.
+`GET /api/audit/actions/` lists the action names. The log is read-only: there is no API to edit or delete entries, and the model refuses updates.
+It records the REQUEST, not a field-by-field before/after diff. Validation errors, 404s and reads are not recorded.
+
+### Platform admin dashboard (bare domain only, superusers only)
+Create one with `docker compose exec web python manage.py createsuperuser`, then log in at `http://localhost:8000/api/auth/login/`.
+An organization's owner is NOT a platform admin (403), and these URLs do not exist on organization domains.
+| Endpoint | What it shows |
+|---|---|
+| `GET /api/platform/overview/` | organizations, plan mix, paying / trialing / past-due counts, MRR, ARR, 30-day churn, signups per month |
+| `GET /api/platform/organizations/` | `?q=` (name, domain, owner email) `&plan=` `&status=` `&ordering=` with plan, status, owner, members |
+| `GET /api/platform/organizations/<id>/` | team, usage (active clients, invoices sent, last activity) and plan limits |
+| `GET /api/platform/billing-events/` | the latest Stripe events processed |
+**MRR** is the listed price (`Plan.price_minor`) of subscriptions that are really paying: `active`, or `past_due` still inside the grace
+period. Trials are counted separately. Keep `price_minor` in step with Stripe: coupons and proration are not reflected.
+**Churn** is cancellations in the last 30 days divided by (paying customers now + those cancellations): an approximation from Stripe events.
+
+## Known limits (Week 7)
+- Audit entries hold the request, not a database diff. Their source IP is the direct connection address (behind a proxy, add trusted-proxy handling).
+- There is no retention policy yet: the audit table grows. A pruning command is easy to add when it matters.
+- Time entries cannot be split or merged, and a forgotten timer is capped at 24 hours when stopped.
+- Expense receipts (file uploads) are not supported yet.
+- Reports are computed live from the tables: fine for thousands of invoices, not millions.

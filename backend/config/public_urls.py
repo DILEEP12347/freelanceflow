@@ -12,4 +12,5 @@ urlpatterns = [
     path("api/auth/", include("apps.accounts.urls")),
     path("api/tenants/signup/", SignupView.as_view()),
     path("api/billing/webhook/", StripeWebhookView.as_view()),  # Stripe -> us (signed, no login)
+    path("api/", include("apps.superadmin.urls")),  # platform admin dashboard (superusers only)
 ]

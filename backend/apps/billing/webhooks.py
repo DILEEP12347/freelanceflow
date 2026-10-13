@@ -16,6 +16,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from apps.audit import services as audit
 from apps.common.tasks import dispatch
 
 from .models import StripeEvent, Subscription, SubscriptionStatus
@@ -25,6 +26,13 @@ from .stripe_payloads import extract_period_end, extract_price_id, extract_tenan
 logger = logging.getLogger(__name__)
 
 ENDED = (SubscriptionStatus.CANCELED, "incomplete_expired")
+
+
+def _audit(sub, action, **changes):
+    audit.record_for_tenant(
+        sub.tenant, action=action, actor_email="stripe", method="WEBHOOK", path="/api/billing/webhook/",
+        object_type="subscription", object_repr=f"{sub.plan.code} ({sub.status})", changes=changes,
+    )
 
 
 def _notify(sub, kind):
@@ -76,7 +84,7 @@ def _on_subscription(event, obj):
     ts = int(event.get("created") or 0)
     if _stale(sub, ts):
         return
-    previous_status = sub.status
+    previous_status, previous_plan = sub.status, sub.plan.code
     status = obj.get("status") or sub.status
     ended = event["type"] == "customer.subscription.deleted" or status in ENDED
 
@@ -109,6 +117,9 @@ def _on_subscription(event, obj):
             sub.grace_until = _grace_deadline(ts)
     sub.last_event_ts = ts
     sub.save()
+    if sub.status != previous_status or sub.plan.code != previous_plan:
+        _audit(sub, "billing.subscription_canceled" if ended else "billing.subscription_updated",
+               previous_plan=previous_plan, plan=sub.plan.code, previous_status=previous_status, status=sub.status)
     if status == SubscriptionStatus.PAST_DUE and previous_status != SubscriptionStatus.PAST_DUE and not ended:
         _notify(sub, "payment_failed")
 
@@ -143,6 +154,7 @@ def _on_invoice_payment_failed(event, obj):
     sub.last_event_ts = ts
     sub.save()
     if newly_past_due:  # one email when the problem starts, not one per card retry
+        _audit(sub, "billing.payment_failed", status=sub.status)
         _notify(sub, "payment_failed")
 
 
