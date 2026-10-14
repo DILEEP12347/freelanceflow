@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 celerybeat-schedule*
 celerybeat.pid
+login.json

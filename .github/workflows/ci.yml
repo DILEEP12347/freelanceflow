@@ -1,0 +1,21 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create env file
+        run: cp .env.example .env
+      - name: Build and start
+        run: docker compose up -d --build
+      - name: Wait for database
+        run: sleep 20
+      - name: Run tests
+        run: docker compose exec -T web python manage.py test
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs
+      - name: Stop
+        if: always()
+        run: docker compose down -v
