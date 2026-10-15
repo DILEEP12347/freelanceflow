@@ -1,5 +1,28 @@
 # FreelanceFlow (through Week 7)
 
+![CI](https://github.com/DILEEP12347/freelanceflow/actions/workflows/ci.yml/badge.svg)
+
+A multi-tenant invoicing and CRM platform for freelancers: clients, leads, invoices with GST, payments, time tracking, expenses, reports, and Stripe subscription billing. Django, Django REST Framework, PostgreSQL, Redis, Celery.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    C["API client"] --> W["web: Django + DRF (gunicorn)"]
+    S["Stripe"] -- webhooks --> W
+    W --> P[("PostgreSQL: public schema + one schema per tenant")]
+    W --> R[("Redis")]
+    R --> K["worker: Celery"]
+    B["beat: Celery scheduler"] --> R
+    K --> P
+    K --> M["SMTP email"]
+```
+
+Each organization gets its own subdomain (`acme.yourdomain.com`) and its own PostgreSQL schema. Shared data (tenants, plans, subscriptions, Stripe events) lives in the public schema.
+
+
+
+
 Multi-tenant Django backend: schema-per-tenant (django-tenants), subdomain routing, JWT auth,
 role-based access, team invites, a CRM (clients, contacts, notes, tags, lead pipeline, timeline),
 invoicing (line items, GST, numbering, payments, PDF), Stripe subscription billing with plan limits, a client portal, emailed invoices, payment reminders and recurring invoices, time tracking and expenses, reports, an audit log and a platform admin dashboard, Postgres, Redis, Celery.
@@ -265,3 +288,28 @@ period. Trials are counted separately. Keep `price_minor` in step with Stripe: c
 - Time entries cannot be split or merged, and a forgotten timer is capped at 24 hours when stopped.
 - Expense receipts (file uploads) are not supported yet.
 - Reports are computed live from the tables: fine for thousands of invoices, not millions.
+
+
+## Design decisions
+
+- **Schema-per-tenant (django-tenants) over shared schema + row-level security.** Each tenant's data is isolated in its own schema, so a missing filter cannot leak data across tenants, and a single tenant is easy to back up or export. The cost is slower migrations as tenants grow, because they run once per tenant. Row-level security with a `tenant_id` column scales to more tenants but depends on every query being filtered correctly.
+- **Money is stored as integer minor units**, never floats (`5000000` means INR 50,000.00).
+- **Stripe webhooks are the source of truth for billing state**, not the frontend.
+- **Cross-tenant isolation is tested explicitly**, as part of a suite of 290 tests that runs in CI on every push.
+
+## Production
+
+The development `docker-compose.yml` uses `runserver` and exposes the database ports. For production use `docker-compose.prod.yml`, which runs gunicorn, a Celery worker and a Celery beat scheduler, and exposes no database or Redis ports.
+
+```
+copy .env.production.example .env.production
+```
+
+Edit `.env.production` with real values (a long random `SECRET_KEY`, `DEBUG=0`, your domain, Stripe and email settings). Never commit this file. Then:
+
+```
+docker compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml exec web python manage.py migrate_schemas
+```
+
+With `DEBUG=0` the app refuses to start if `SECRET_KEY` is still the development default. Subdomain tenants need a wildcard DNS record (`*.yourdomain.com`) and a wildcard HTTPS certificate, and your proxy must send `X-Forwarded-Proto`.
