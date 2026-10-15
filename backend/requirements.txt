@@ -8,3 +8,5 @@ redis>=5.0
 reportlab>=4.2,<5
 stripe>=10,<15
 tzdata
+gunicorn>=22.0
+whitenoise>=6.6
