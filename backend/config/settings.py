@@ -49,12 +49,14 @@ ROOT_URLCONF = "config.urls"
 MIDDLEWARE = [
     "django_tenants.middleware.main.TenantMainMiddleware",  # must be first
     "django.middleware.security.SecurityMiddleware",
+   "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "apps.audit.middleware.AuditMiddleware",  # Week 7: records state-changing API calls
+
 ]
 
 TEMPLATES = [
@@ -151,3 +153,23 @@ STRIPE_PRICE_IDS = {  # Stripe Price ids (price_...) for the paid plans; a Plan 
 }
 BILLING_GRACE_DAYS = int(os.environ.get("BILLING_GRACE_DAYS", "7"))  # paid features stay on this long after a failed payment
 BILLING_RETURN_PATH = os.environ.get("BILLING_RETURN_PATH", "/settings/billing")  # where Stripe sends people back to
+
+# --- Week 8: production hardening ---
+STATIC_ROOT = BASE_DIR / "staticfiles"
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedStaticFilesStorage"},
+}
+
+if not DEBUG and "test" not in sys.argv:
+    from django.core.exceptions import ImproperlyConfigured
+
+    if SECRET_KEY == "dev-insecure-change-me":
+        raise ImproperlyConfigured("Set a real SECRET_KEY when DEBUG=0")
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_SSL_REDIRECT = os.environ.get("SECURE_SSL_REDIRECT", "1") == "1"
+    CSRF_TRUSTED_ORIGINS = [
+        o for o in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",") if o
+    ]
